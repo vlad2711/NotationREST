@@ -9,6 +9,7 @@ import org.jetbrains.exposed.sql.transactions.transaction
 import org.jetbrains.kotlin.demo.models.RESTModels
 import org.jetbrains.exposed.sql.SchemaUtils.create
 import org.jetbrains.exposed.sql.transactions.TransactionManager
+import org.slf4j.LoggerFactory
 import java.sql.Connection
 
 
@@ -35,6 +36,7 @@ class DatabaseController {
     class Notation(id: EntityID<Int>): IntEntity(id){
         companion object: IntEntityClass<Notation>(NotationTable)
 
+        var notationId by NotationTable.idOfUserNotation
         var email by NotationTable.email
         var notation by NotationTable.notation
     }
@@ -45,7 +47,8 @@ class DatabaseController {
         val password: Column<String> = varchar("password", 60)
     }
 
-    object NotationTable: IntIdTable("NotationTable"){
+    object NotationTable: IntIdTable("notation"){
+        val idOfUserNotation: Column<Int> = integer("notation_id")
         val email: Column<String> = varchar("email", 60)
         val notation: Column<String> = varchar("notation", 250)
     }
@@ -72,7 +75,9 @@ class DatabaseController {
         connect()
         if(transaction {SignUp.find{SignUpTable.email eq notationsModel.logInModel.email}.first().password == notationsModel.logInModel.password}){
             transaction {
+                val list = NotationTable.select { NotationTable.email eq notationsModel.logInModel.email }.toMutableList()
                 Notation.new {
+                    notationId = list.size
                     email = notationsModel.logInModel.email
                     notation = notationsModel.notations
                 }
@@ -81,16 +86,33 @@ class DatabaseController {
         return RESTModels.NotationModelResponse(notationsModel.logInModel, "OK")
     }
 
-    fun getNotations(logInModel: RESTModels.LogInModel): MutableList<ResultRow> {
+    fun getNotations(logInModel: RESTModels.LogInModel, from: Int, to: Int): RESTModels.NotationResponse {
         connect()
-        if(transaction {SignUp.find{SignUpTable.email eq logInModel.email}.first().password == logInModel.password}){
-            return transaction{ NotationTable.select {NotationTable.email eq logInModel.email}.toMutableList()}
+        var response = RESTModels.NotationResponse(List(init = { RESTModels.NotationResponseItem(0, "", "") }, size = 0))
+
+        if(login(logInModel).result == "OK") {
+            val list = transaction { NotationTable.select { NotationTable.email eq logInModel.email and (NotationTable.idOfUserNotation.between(from, to)) }.toMutableList() }
+            response = RESTModels.NotationResponse(List(init = { RESTModels.NotationResponseItem(0, "", "") }, size = list.size))
+            transaction {
+                for (i in list.indices) {
+                    response.response[i].email = list[i].data[2].toString()
+                    response.response[i].id = list[i].data[1] as Int
+                    response.response[i].notation = list[i].data[3].toString()
+                }
+            }
         }
-        return emptyArray<ResultRow>().toMutableList()
+        return response
     }
 
-    fun deleteNotation(notationsModel: RESTModels.NotationsModel) = NotationTable.deleteWhere{
-        (NotationTable.notation eq notationsModel.notations) and (NotationTable.email eq notationsModel.logInModel.email)
+    fun login(logInModel: RESTModels.LogInModel): RESTModels.LogInModelResponse {
+        connect()
+        val table = transaction {SignUp.find { SignUpTable.email eq logInModel.email}}
+        if(transaction {table.count() > 0}) {
+            if (transaction { table.first().password == logInModel.password }) {
+                return RESTModels.LogInModelResponse(logInModel, "OK")
+            }
+        }
+        return RESTModels.LogInModelResponse(logInModel, "ERROR")
     }
 }
 
